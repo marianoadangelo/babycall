@@ -112,7 +112,7 @@ class _DiscoveryScreenState extends State<DiscoveryScreen> {
                 : ListView.separated(
                     padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
                     itemCount: devices.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 8),
+                    separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, i) {
                       final d = devices[i];
                       return Card(
