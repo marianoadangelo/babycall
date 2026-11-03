@@ -6,17 +6,8 @@ import '../services/camera_session.dart';
 import '../services/network_scanner.dart';
 import '../theme.dart';
 import '../widgets/camera_tile.dart';
+import 'auto_configure_screen.dart';
 import 'discovery_screen.dart';
-
-/// Credenciales de fábrica más comunes en cámaras Srihome y clones. No hay una
-/// contraseña universal: en estos modelos la define el usuario al emparejar, así
-/// que son solo un intento rápido antes de resetear la cámara.
-const List<(String, String)> kCommonCredentials = [
-  ('admin', ''),
-  ('admin', 'admin'),
-  ('admin', '123456'),
-  ('admin', '12345'),
-];
 
 sealed class CameraFormResult {}
 
@@ -121,8 +112,49 @@ class _CameraFormScreenState extends State<CameraFormScreen> {
     });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('Cargué la IP ${device.host}. Escribí usuario y '
-          'contraseña y tocá "Probar".'),
+          'contraseña y tocá "Probar", o usá "Autoconfigurar".'),
       duration: const Duration(seconds: 4),
+    ));
+  }
+
+  /// Abre el autoconfigurador, que prueba rutas RTSP y credenciales contra la
+  /// IP hasta conseguir video, y carga en el formulario la que funcione.
+  Future<void> _autoConfigure() async {
+    final host = _manualUrl ? '' : _host.text.trim();
+    if (host.isEmpty || host == '192.168.') {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Primero cargá la IP de la cámara: buscá en la red o '
+            'escribila en el asistente.'),
+        duration: Duration(seconds: 4),
+      ));
+      return;
+    }
+    final result = await Navigator.of(context).push<CameraConfig>(
+      MaterialPageRoute(
+        builder: (_) => AutoConfigureScreen(
+          host: host,
+          name: _name.text.trim().isEmpty ? 'Cámara' : _name.text.trim(),
+          knownUser: _user.text.trim().isEmpty ? 'admin' : _user.text.trim(),
+          knownPassword: _pass.text,
+          tryCommonCredentials: true,
+          useTcp: _useTcp,
+          networkCachingMs: _caching.round(),
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      _manualUrl = false;
+      _port.text = '${result.port}';
+      _path.text = result.path;
+      _user.text = result.username;
+      _pass.text = result.password;
+      _showPass = true;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('¡Listo! Cargué la configuración que dio video. '
+          'Tocá "Guardar".'),
+      duration: Duration(seconds: 4),
     ));
   }
 
@@ -190,6 +222,15 @@ class _CameraFormScreenState extends State<CameraFormScreen> {
                 onPressed: _discover,
                 icon: const Icon(Icons.wifi_find),
                 label: const Text('Buscar cámaras en la red'),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _autoConfigure,
+                icon: const Icon(Icons.auto_mode),
+                label: const Text('Autoconfigurar (probar rutas y claves)'),
               ),
             ),
             const SizedBox(height: 16),
@@ -341,15 +382,16 @@ class _CameraFormScreenState extends State<CameraFormScreen> {
         runSpacing: 4,
         children: [
           for (final (user, pass) in kCommonCredentials)
-            ActionChip(
-              avatar: const Icon(Icons.vpn_key_outlined, size: 16),
-              label: Text(pass.isEmpty ? '$user / (sin clave)' : '$user / $pass'),
-              onPressed: () => setState(() {
-                _user.text = user;
-                _pass.text = pass;
-                _showPass = true;
-              }),
-            ),
+            if (user.isNotEmpty)
+              ActionChip(
+                avatar: const Icon(Icons.vpn_key_outlined, size: 16),
+                label: Text(pass.isEmpty ? '$user / (sin clave)' : '$user / $pass'),
+                onPressed: () => setState(() {
+                  _user.text = user;
+                  _pass.text = pass;
+                  _showPass = true;
+                }),
+              ),
         ],
       ),
     ];

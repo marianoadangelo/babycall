@@ -18,6 +18,48 @@ const List<RtspPreset> kSrihomePresets = [
   RtspPreset('cam1/mpeg4 (554)', 554, '/cam1/mpeg4'),
 ];
 
+/// Un par puerto + ruta RTSP para probar automáticamente.
+class RtspCandidate {
+  final int port;
+  final String path;
+  const RtspCandidate(this.port, this.path);
+}
+
+/// Rutas RTSP a probar en el autoconfigurador. Cubren Srihome y los clones
+/// más comunes (Gadnic, ICSee, V380, YCC365, y los estilos Dahua/Hikvision/
+/// Reolink que usan algunos modelos rebrandeados).
+/// Las rutas se prueban en orden de probabilidad; se corta en la primera que
+/// da video. Se mantiene acotada a propósito para que el escaneo no se eternice
+/// (cada combinación ruta×clave abre el stream de verdad).
+const List<RtspCandidate> kRtspPathCandidates = [
+  // Srihome y familia :8554
+  RtspCandidate(8554, '/profile0'),
+  RtspCandidate(8554, '/profile1'),
+  // ONVIF genérico :554
+  RtspCandidate(554, '/onvif1'),
+  RtspCandidate(554, '/onvif-stream1'),
+  // ICSee / V380 / clones chinos (Gadnic suele caer acá)
+  RtspCandidate(554, '/live/ch00_0'),
+  RtspCandidate(554, '/11'),
+  RtspCandidate(554, '/1/h264major'),
+  RtspCandidate(554, '/stream1'),
+  // Estilo Dahua / Hikvision / Reolink (modelos rebrandeados)
+  RtspCandidate(554, '/cam/realmonitor?channel=1&subtype=0'),
+  RtspCandidate(554, '/Streaming/Channels/101'),
+  RtspCandidate(554, '/h264Preview_01_main'),
+];
+
+/// Credenciales de fábrica más comunes en cámaras tipo baby-call (Srihome,
+/// Gadnic y clones). No hay una contraseña universal: la define el usuario al
+/// emparejar, así que son solo un intento rápido antes de resetear la cámara.
+const List<(String, String)> kCommonCredentials = [
+  ('admin', ''),
+  ('admin', 'admin'),
+  ('admin', '123456'),
+  ('admin', '12345'),
+  ('', ''),
+];
+
 class CameraConfig {
   final String id;
   final String name;
