@@ -1,0 +1,43 @@
+# Compila el APK de release en GitHub Actions y lo publica en la release
+# "latest" del repositorio, para descargarlo directo desde el teléfono.
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --release
+      - run: cp build/app/outputs/flutter-apk/app-release.apk baby-call.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baby-call-apk
+          path: baby-call.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Baby Call (última versión)
+          body: APK compilado del commit ${{ github.sha }}.
+          prerelease: false
+          make_latest: true
+          files: baby-call.apk
