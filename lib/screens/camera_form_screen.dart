@@ -3,8 +3,20 @@ import 'package:flutter/material.dart';
 import '../models/camera_config.dart';
 import '../services/camera_manager.dart';
 import '../services/camera_session.dart';
+import '../services/network_scanner.dart';
 import '../theme.dart';
 import '../widgets/camera_tile.dart';
+import 'discovery_screen.dart';
+
+/// Credenciales de fábrica más comunes en cámaras Srihome y clones. No hay una
+/// contraseña universal: en estos modelos la define el usuario al emparejar, así
+/// que son solo un intento rápido antes de resetear la cámara.
+const List<(String, String)> kCommonCredentials = [
+  ('admin', ''),
+  ('admin', 'admin'),
+  ('admin', '123456'),
+  ('admin', '12345'),
+];
 
 sealed class CameraFormResult {}
 
@@ -91,6 +103,29 @@ class _CameraFormScreenState extends State<CameraFormScreen> {
     });
   }
 
+  /// Abre el buscador de red y, si el usuario elige una cámara, precarga su
+  /// IP y puerto en el asistente.
+  Future<void> _discover() async {
+    final device = await Navigator.of(context).push<DiscoveredDevice>(
+      MaterialPageRoute(builder: (_) => const DiscoveryScreen()),
+    );
+    if (device == null || !mounted) return;
+    setState(() {
+      _manualUrl = false;
+      _host.text = device.host;
+      _port.text = '${device.bestRtspPort}';
+      // En el puerto 554 la ruta típica de Srihome por ONVIF es otra.
+      if (device.bestRtspPort == 554 && _path.text == '/profile0') {
+        _path.text = '/onvif-stream1';
+      }
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Cargué la IP ${device.host}. Escribí usuario y '
+          'contraseña y tocá "Probar".'),
+      duration: const Duration(seconds: 4),
+    ));
+  }
+
   void _save() {
     if (!_formKey.currentState!.validate()) return;
     Navigator.of(context).pop(CameraFormSaved(_draft()));
@@ -147,6 +182,15 @@ class _CameraFormScreenState extends State<CameraFormScreen> {
             TextFormField(
               controller: _name,
               decoration: const InputDecoration(labelText: 'Nombre', prefixIcon: Icon(Icons.label_outline)),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonalIcon(
+                onPressed: _discover,
+                icon: const Icon(Icons.wifi_find),
+                label: const Text('Buscar cámaras en la red'),
+              ),
             ),
             const SizedBox(height: 16),
             SegmentedButton<bool>(
@@ -288,6 +332,26 @@ class _CameraFormScreenState extends State<CameraFormScreen> {
           ),
         ),
       ),
+      const SizedBox(height: 10),
+      const Text('¿No recordás la clave? Probá combinaciones comunes y tocá "Probar":',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+      const SizedBox(height: 6),
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: [
+          for (final (user, pass) in kCommonCredentials)
+            ActionChip(
+              avatar: const Icon(Icons.vpn_key_outlined, size: 16),
+              label: Text(pass.isEmpty ? '$user / (sin clave)' : '$user / $pass'),
+              onPressed: () => setState(() {
+                _user.text = user;
+                _pass.text = pass;
+                _showPass = true;
+              }),
+            ),
+        ],
+      ),
     ];
   }
 
@@ -399,16 +463,34 @@ class _HelpCard extends StatelessWidget {
                 style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
             SizedBox(height: 8),
             Text(
-              '1. IP: en la app de Srihome entrá a la cámara → Configuración → Información '
-              'del dispositivo (o "Red"). También la ves en el router, en la lista de '
-              'dispositivos conectados. Conviene reservarla (IP fija/DHCP estático) en el router.\n'
+              '1. IP: tocá "Buscar cámaras en la red" y la app rastrea la red Wi-Fi '
+              'y te carga la IP sola. También la ves en la app de Srihome '
+              '(Configuración → Información del dispositivo) o en el router. '
+              'Conviene reservarla (IP fija/DHCP estático) en el router.\n'
               '2. Usuario: casi siempre "admin".\n'
-              '3. Contraseña: la que configuraste para la cámara en la app de Srihome '
-              '(en algunos modelos hay que crearla en Configuración → Contraseña del dispositivo, '
-              'o activar "ONVIF/RTSP" en la configuración avanzada).\n'
+              '3. Contraseña: esta NO se puede detectar por la red; es la que vos '
+              'pusiste al emparejar la cámara en la app de Srihome. En algunos modelos '
+              'está en Configuración → Contraseña del dispositivo, o hay que activar '
+              '"ONVIF/RTSP" en la configuración avanzada.\n'
               '4. Ruta: la más común es puerto 8554 y /profile0 (HD) o /profile1 (más liviana). '
               'Si no anda, probá las otras rutas conocidas con el botón "Probar".\n'
               '5. Tip: podés verificar la URL en una PC con VLC → Medio → Abrir ubicación de red.',
+              style: style,
+            ),
+            SizedBox(height: 12),
+            Text('Si no recordás la contraseña',
+                style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+            SizedBox(height: 8),
+            Text(
+              '• No existe forma de "descubrirla" por la red: el video RTSP está '
+              'protegido justamente para que nadie más la vea.\n'
+              '• Primero probá los accesos comunes de arriba (admin con clave vacía o '
+              'admin/admin) y tocá "Probar".\n'
+              '• Si ninguno entra, abrí la app oficial de Srihome: ahí podés ver o '
+              'cambiar la contraseña del dispositivo sin resetear nada.\n'
+              '• Último recurso: resetear la cámara. Mantené apretado el botón RESET '
+              '(5-10 s, suele estar al lado del slot SD o en la base) hasta que reinicie. '
+              'Vuelve de fábrica y la emparejás de nuevo en la app poniendo una clave nueva.',
               style: style,
             ),
           ],
