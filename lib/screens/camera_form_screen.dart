@@ -366,6 +366,9 @@ class _CameraFormScreenState extends State<CameraFormScreen> {
         autocorrect: false,
         decoration: InputDecoration(
           labelText: 'Contraseña de la cámara',
+          helperText: 'Srihome: la clave del dispositivo que pusiste en la '
+              'app (fábrica 888888).',
+          helperMaxLines: 2,
           prefixIcon: const Icon(Icons.lock_outline),
           suffixIcon: IconButton(
             icon: Icon(_showPass ? Icons.visibility_off : Icons.visibility),

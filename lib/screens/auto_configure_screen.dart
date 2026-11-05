@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/camera_config.dart';
 import '../services/camera_manager.dart';
 import '../services/camera_session.dart';
+import '../services/rtsp_probe.dart';
 import '../theme.dart';
 import '../widgets/camera_tile.dart';
 
@@ -15,7 +16,8 @@ class _Attempt {
   final String credLabel;
 
   String get label =>
-      '${config.port}${config.path}  ·  $credLabel';
+      '${config.port}${config.path.replaceAll(RegExp(r'pwd=[^&]*'), 'pwd=***')}'
+      '  ·  $credLabel';
 }
 
 /// Prueba automáticamente rutas RTSP y credenciales contra una IP hasta
@@ -67,23 +69,35 @@ class _AutoConfigureScreenState extends State<AutoConfigureScreen> {
   Timer? _poll;
   DateTime _attemptStart = DateTime.now();
 
+  /// Fase rápida previa a VLC: puertos abiertos + DESCRIBE por ruta.
+  bool _probing = true;
+  String _probeStatus = 'Revisando puertos de la cámara…';
+  int _probeDone = 0;
+  int _probeTotal = 0;
+
+  /// Explicación de por qué no conectó (se muestra si falla todo).
+  String? _diagnosis;
+
+  /// Para que un reintento invalide la corrida anterior.
+  int _runId = 0;
+
   @override
   void initState() {
     super.initState();
-    _buildAttempts();
-    _startAttempt();
+    _run();
   }
 
   @override
   void dispose() {
+    _runId++;
     _poll?.cancel();
     _session?.dispose();
     _previewManager.dispose();
     super.dispose();
   }
 
-  void _buildAttempts() {
-    // Credenciales: primero la que el usuario cargó, después las comunes.
+  /// Credenciales a probar: primero la que cargó el usuario, luego las comunes.
+  List<(String, String)> _credentials() {
     final creds = <(String, String)>[];
     void addCred(String u, String p) {
       if (!creds.any((c) => c.$1 == u && c.$2 == p)) creds.add((u, p));
@@ -96,29 +110,154 @@ class _AutoConfigureScreenState extends State<AutoConfigureScreen> {
         addCred(u, p);
       }
     }
+    return creds;
+  }
 
-    // Recorremos credencial por credencial, probando todas las rutas con cada
-    // una (si la clave es correcta, alguna ruta dará video; si es incorrecta,
-    // ninguna lo hará y pasamos a la siguiente clave).
-    for (final (u, p) in creds) {
-      final credLabel = p.isEmpty ? '$u / (sin clave)' : '$u / $p';
-      for (final cand in kRtspPathCandidates) {
-        _attempts.add(_Attempt(
-          CameraConfig(
-            id: 'probe',
-            name: widget.name,
-            host: widget.host,
-            port: cand.port,
-            path: cand.path,
-            username: u,
-            password: p,
-            useTcp: widget.useTcp,
-            networkCachingMs: widget.networkCachingMs,
-          ),
-          credLabel,
-        ));
-      }
+  _Attempt _attemptFor(RtspCandidate cand, String u, String p) {
+    final credLabel = p.isEmpty ? '$u / (sin clave)' : '$u / ${'*' * p.length}';
+    return _Attempt(
+      CameraConfig(
+        id: 'probe',
+        name: widget.name,
+        host: widget.host,
+        port: cand.port,
+        path: resolveRtspPath(cand.path, u, p),
+        username: u,
+        password: p,
+        useTcp: widget.useTcp,
+        networkCachingMs: widget.networkCachingMs,
+      ),
+      credLabel,
+    );
+  }
+
+  bool _alive(int id) => mounted && id == _runId;
+
+  Future<RtspProbeResult> _describe(RtspCandidate cand, String u, String p) =>
+      RtspProbe.describe(
+        host: widget.host,
+        port: cand.port,
+        path: resolveRtspPath(cand.path, u, p),
+        username: u,
+        password: p,
+      );
+
+  Future<void> _run() async {
+    final id = ++_runId;
+    _poll?.cancel();
+    final old = _session;
+    _session = null;
+    if (old != null) {
+      Future.delayed(const Duration(milliseconds: 400), old.dispose);
     }
+    _attempts.clear();
+    _tried.clear();
+    _index = 0;
+    setState(() {
+      _running = true;
+      _probing = true;
+      _result = null;
+      _diagnosis = null;
+      _probeDone = 0;
+      _probeTotal = 0;
+      _probeStatus = 'Revisando puertos RTSP (${kRtspPorts.join(', ')})…';
+    });
+
+    // 1) ¿Qué puertos RTSP tiene abiertos la cámara?
+    final open = <int>[];
+    await Future.wait(kRtspPorts.map((port) async {
+      if (await RtspProbe.isPortOpen(widget.host, port)) open.add(port);
+    }));
+    open.sort();
+    if (!_alive(id)) return;
+    if (open.isEmpty) {
+      setState(() {
+        _running = false;
+        _probing = false;
+        _diagnosis = 'La cámara (${widget.host}) no tiene abierto ningún '
+            'puerto RTSP (${kRtspPorts.join(', ')}).\n\n'
+            '• Revisá que la IP sea la correcta: en la app Srihome suele '
+            'estar en la información del dispositivo, o en la lista de '
+            'equipos del router. También podés usar "Buscar cámaras en la '
+            'red".\n'
+            '• En la app Srihome buscá una opción ONVIF / RTSP / NVR y '
+            'activala.\n'
+            '• Si no existe esa opción, este modelo probablemente solo '
+            'transmite por la nube de Srihome y no se puede ver fuera de su '
+            'app.';
+      });
+      return;
+    }
+
+    // 2) Sondeo rápido con DESCRIBE: descarta rutas y claves incorrectas
+    //    sin abrir el video (menos de un segundo por ruta).
+    final creds = _credentials();
+    final candidates =
+        kRtspPathCandidates.where((c) => open.contains(c.port)).toList();
+    setState(() {
+      _probeTotal = candidates.length;
+      _probeStatus = 'Puertos abiertos: ${open.join(', ')}. '
+          'Preguntando por las rutas conocidas…';
+    });
+
+    final ok = <_Attempt>[];
+    final unsure = <_Attempt>[];
+    var unauthorizedPaths = 0;
+    for (final cand in candidates) {
+      if (!_alive(id)) return;
+      final (u0, p0) = creds.first;
+      var r = await _describe(cand, u0, p0);
+      if (r.status == RtspProbeStatus.ok) {
+        ok.add(_attemptFor(cand, u0, p0));
+      } else if (r.status == RtspProbeStatus.unauthorized) {
+        // La ruta puede existir pero la clave no sirve: probamos las demás.
+        for (final (u, p) in creds.skip(1)) {
+          if (!_alive(id)) return;
+          r = await _describe(cand, u, p);
+          if (r.status == RtspProbeStatus.ok) {
+            ok.add(_attemptFor(cand, u, p));
+            break;
+          }
+          if (r.status != RtspProbeStatus.unauthorized) break;
+        }
+        if (r.status == RtspProbeStatus.unauthorized) unauthorizedPaths++;
+      } else if (r.status == RtspProbeStatus.unknown) {
+        // Respuesta rara: no descartamos, se prueba con VLC al final.
+        for (final (u, p) in creds) {
+          unsure.add(_attemptFor(cand, u, p));
+        }
+      }
+      if (!_alive(id)) return;
+      setState(() => _probeDone++);
+      if (ok.isNotEmpty) break; // Con una ruta buena alcanza.
+    }
+    if (!_alive(id)) return;
+
+    // 3) Confirmación con VLC: primero lo que la cámara aceptó.
+    _attempts
+      ..addAll(ok)
+      ..addAll(unsure);
+    if (_attempts.isEmpty) {
+      setState(() {
+        _running = false;
+        _probing = false;
+        _diagnosis = unauthorizedPaths > 0
+            ? 'La cámara responde RTSP (puerto ${open.join(', ')}) pero '
+                'rechazó todas las contraseñas probadas.\n\n'
+                '• Escribí en "Contraseña" la clave del DISPOSITIVO que '
+                'configuraste en la app Srihome (no la del Wi-Fi ni la de tu '
+                'cuenta) y volvé a autoconfigurar.\n'
+                '• El usuario casi siempre es "admin".'
+            : 'La cámara responde en el puerto ${open.join(', ')} pero no '
+                'reconoce ninguna de las ${candidates.length} rutas '
+                'conocidas.\n\n'
+                'Si sabés la URL exacta (por ejemplo con la app "ONVIF Device '
+                'Manager"), cargala a mano en "URL completa".';
+      });
+      return;
+    }
+    setState(() => _probing = false);
+    _startAttempt();
   }
 
   void _startAttempt() {
@@ -130,7 +269,12 @@ class _AutoConfigureScreenState extends State<AutoConfigureScreen> {
       Future.delayed(const Duration(milliseconds: 400), old.dispose);
     }
     if (_index >= _attempts.length) {
-      setState(() => _running = false);
+      setState(() {
+        _running = false;
+        _diagnosis ??= 'La cámara aceptó la conexión RTSP, pero el video no '
+            'llegó a reproducirse. Probá desactivar "RTSP sobre TCP" o subir '
+            'la caché de red, y volvé a intentar.';
+      });
       return;
     }
     final attempt = _attempts[_index];
@@ -174,8 +318,13 @@ class _AutoConfigureScreenState extends State<AutoConfigureScreen> {
   }
 
   void _stop() {
+    _runId++;
     _poll?.cancel();
-    setState(() => _running = false);
+    setState(() {
+      _running = false;
+      _probing = false;
+      _diagnosis ??= 'Búsqueda detenida.';
+    });
   }
 
   @override
@@ -224,6 +373,8 @@ class _AutoConfigureScreenState extends State<AutoConfigureScreen> {
             const SizedBox(height: 16),
             if (_result != null)
               _successCard(_result!)
+            else if (_running && _probing)
+              _probingBody()
             else if (_running)
               _runningBody(attempt, total)
             else
@@ -233,6 +384,36 @@ class _AutoConfigureScreenState extends State<AutoConfigureScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _probingBody() {
+    final total = _probeTotal;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                total == 0
+                    ? _probeStatus
+                    : '$_probeStatus ($_probeDone de $total)',
+                style: const TextStyle(color: AppColors.textPrimary),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        LinearProgressIndicator(
+            value: total == 0 ? null : (_probeDone / total).clamp(0.0, 1.0)),
+      ],
     );
   }
 
@@ -333,22 +514,17 @@ class _AutoConfigureScreenState extends State<AutoConfigureScreen> {
           ],
         ),
         const SizedBox(height: 8),
-        const Text(
-          'Probablemente la contraseña no sea de las comunes, o la cámara no '
-          'tenga RTSP activado. Revisá la clave en la app oficial, activá '
-          'ONVIF/RTSP, o reseteá la cámara. También podés cargar la URL a mano.',
-          style: TextStyle(color: AppColors.textSecondary),
+        Text(
+          _diagnosis ??
+              'Probablemente la contraseña no sea de las comunes, o la cámara '
+                  'no tenga RTSP activado. Revisá la clave en la app oficial, '
+                  'activá ONVIF/RTSP, o reseteá la cámara. También podés '
+                  'cargar la URL a mano.',
+          style: const TextStyle(color: AppColors.textSecondary),
         ),
         const SizedBox(height: 16),
         OutlinedButton.icon(
-          onPressed: () {
-            setState(() {
-              _index = 0;
-              _tried.clear();
-              _running = true;
-            });
-            _startAttempt();
-          },
+          onPressed: _run,
           icon: const Icon(Icons.refresh),
           label: const Text('Probar de nuevo'),
         ),

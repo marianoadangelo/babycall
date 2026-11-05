@@ -66,11 +66,11 @@ class ScanProgress {
 ///  1. WS-Discovery de ONVIF: envía un Probe multicast a 239.255.255.250:3702
 ///     y recoge los ProbeMatch de las cámaras compatibles.
 ///  2. Escaneo de puertos RTSP: recorre la subred /24 del teléfono probando
-///     una conexión TCP a los puertos RTSP típicos (554 y 8554) y confirma con
+///     una conexión TCP a los puertos RTSP típicos (554, 8554 y 10554) y confirma con
 ///     un `OPTIONS` RTSP que del otro lado hay un servidor de streaming.
 class NetworkScanner {
   /// Puertos RTSP habituales en cámaras Srihome y clones.
-  static const List<int> rtspPorts = [8554, 554];
+  static const List<int> rtspPorts = [8554, 554, 10554];
 
   bool _cancelled = false;
   void cancel() => _cancelled = true;
